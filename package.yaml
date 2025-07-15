@@ -1,0 +1,23 @@
+name: HaskellNixCabalStarter
+version: '0.1.0.0'
+author: HaskellNixCabalStarter
+maintainer: HaskellNixCabalStarter
+license: MIT
+dependencies:
+- base
+- typed-process
+- yaml
+- aeson
+- bytestring
+- directory
+- filepath
+- text
+- unordered-containers
+- containers
+- hpack 
+executables:
+  app:
+    source-dirs: src
+    main: Main.hs
+default-extensions: 
+- LambdaCase
