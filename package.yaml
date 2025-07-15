@@ -16,7 +16,7 @@ dependencies:
 - containers
 - hpack 
 executables:
-  app:
+  hdev:
     source-dirs: src
     main: Main.hs
 default-extensions: 
