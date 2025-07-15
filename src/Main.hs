@@ -51,20 +51,34 @@ runGhcid :: T.Text -> Bool -> Maybe String -> DecodeResult -> IO ()
 runGhcid exe lintMode envFile decodeResult = do
   cwd <- getCurrentDirectory
   let v = takeFileName cwd
+      ghcidOutput = "/tmp2/" ++ v ++ ".ghcid"
       mainFile = getExecutableMain decodeResult exe
       mainModule = T.dropEnd 3 mainFile
       
   cabalFiles <- filter (".cabal" `isSuffixOf`) <$> getDirectoryContents "."
-  when (null cabalFiles) $ runProcess_ (proc "hpack" [])
-  unless (null cabalFiles) $ do
-    packageYamlNewer <- (>) <$> getModificationTime "package.yaml" <*> getModificationTime (head cabalFiles)
-    when packageYamlNewer $ runProcess_ (proc "hpack" [])
+  if (null cabalFiles)
+     then runProcess_ (proc "hpack" [])
+     else do
+        packageYamlNewer <- (>) <$> getModificationTime "package.yaml" <*> getModificationTime (head cabalFiles)
+        when packageYamlNewer $ runProcess_ (proc "hpack" [])
   
-  let ghcidArgs = ["--command", "cabal v2-repl exe:" ++ T.unpack exe, "-o", "/tmp2/" ++ v ++ ".ghcid"]
+  let ghcidArgs = ["--command", mconcat ["cabal v2-repl exe:", T.unpack exe], "-o", ghcidOutput]
       testArgs = if lintMode then [] else ["--test", T.unpack mainModule ++ ".main"]
+      args = ghcidArgs ++ testArgs
       envSource = fromMaybe "env.sh" envFile
       
-  runProcess_ $ proc "bash" ["-c", "source " ++ envSource ++ " && ghcid " ++ unwords (ghcidArgs ++ testArgs)]
+  let p = proc "bash" [ "-c", mconcat ["source ", envSource, " &&",  "ghcid " ++ unwords args]]
+  print p
+  runProcess_ p
+
+runExecWithCmd :: T.Text -> Maybe String -> [String] -> IO ()
+runExecWithCmd exe envFile extraArgs = do
+  let cmd = case envFile of
+        Just env -> mconcat ["source ", env," && cabal run ", T.unpack exe, " -- ", unwords extraArgs]
+        Nothing -> "cabal run " ++ T.unpack exe ++ " -- " ++ unwords extraArgs
+  let p = proc "bash" ["-c", cmd]
+  print p
+  runProcess_ p
 
 main :: IO ()
 main = do
@@ -72,6 +86,7 @@ main = do
   decodeResult <- parsePackageYaml
   let exes = getExecutables decodeResult
       selectAndRun lint env = interactiveSelect exes >>= \exe -> runGhcid exe lint env decodeResult
+      selectAndExec env extraArgs = interactiveSelect exes >>= \exe -> runExecWithCmd exe env extraArgs
       
   case args of
     ["--list"]                        -> mapM_ TIO.putStrLn exes
@@ -83,5 +98,9 @@ main = do
     ["--env", envFile, "--run", exe]  -> runGhcid (T.pack exe) False (Just envFile) decodeResult
     ["--env", envFile, "--lint"]      -> selectAndRun True (Just envFile)
     ["--env", envFile, "--lint", exe] -> runGhcid (T.pack exe) True (Just envFile) decodeResult
+    ("--exec-with-cmd":exe:rest)      -> runExecWithCmd (T.pack exe) Nothing rest
+    ("--exec-with-cmd":rest)          -> selectAndExec Nothing rest
+    ("--env":envFile:"--exec-with-cmd":exe:rest) -> runExecWithCmd (T.pack exe) (Just envFile) rest
+    ("--env":envFile:"--exec-with-cmd":rest)      -> selectAndExec (Just envFile) rest
     []                                -> selectAndRun False Nothing
-    _                                 -> putStrLn "Usage: script [--env <file>] [--list | --run [<executable>] | --lint [<executable>]]" >> exitFailure
+    _                                 -> putStrLn "Usage: script [--env <file>] [--list | --run [<executable>] | --lint [<executable>] | --exec-with-cmd [<executable>] [args...]]" >> exitFailure
