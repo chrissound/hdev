@@ -13,7 +13,6 @@ import Hpack
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Process.Typed
-import System.Environment
 import System.Exit
 import System.Directory
 import System.FilePath
@@ -21,6 +20,7 @@ import Control.Monad
 import qualified Data.Map as M
 import Data.List (isSuffixOf)
 import Data.Maybe (fromMaybe)
+import Options.Applicative
 
 parsePackageYaml :: IO DecodeResult
 parsePackageYaml = readPackageConfig defaultDecodeOptions >>= \case
@@ -42,10 +42,14 @@ getExecutableMain decodeResult exeName =
 interactiveSelect :: [T.Text] -> IO T.Text
 interactiveSelect exes = do
   putStrLn "Select an executable:"
-  mapM_ (\(i, exe) -> putStrLn $ show i ++ ") " ++ T.unpack exe) (zip [1..] exes)
-  getLine >>= \choice -> case reads choice of
+  forM_ (zip [1..] exes) $ \(i, exe) -> 
+    putStrLn $ show i <> ") " <> T.unpack exe
+  selection <- getLine
+  case reads selection of
     [(n, "")] | n > 0 && n <= length exes -> return $ exes !! (n-1)
-    _ -> interactiveSelect exes
+    _ -> do
+      putStrLn "Invalid selection. Please try again."
+      interactiveSelect exes
 
 runGhcid :: T.Text -> Bool -> Maybe String -> DecodeResult -> IO ()
 runGhcid exe lintMode envFile decodeResult = do
@@ -65,42 +69,65 @@ runGhcid exe lintMode envFile decodeResult = do
   let ghcidArgs = ["--command", mconcat ["cabal v2-repl exe:", T.unpack exe], "-o", ghcidOutput]
       testArgs = if lintMode then [] else ["--test", T.unpack mainModule ++ ".main"]
       args = ghcidArgs ++ testArgs
-      envSource = fromMaybe "env.sh" envFile
       
-  let p = proc "bash" [ "-c", mconcat ["source ", envSource, " &&",  "ghcid " ++ unwords args]]
+  let p = case envFile of
+        Just env -> proc "bash" ["-c", mconcat ["source ", env, " && exec ghcid ", unwords args]]
+        Nothing -> proc "ghcid" args
+      processConfig = setDelegateCtlc True p
   print p
-  runProcess_ p
+  _ <- runProcess processConfig
+  return ()
 
 runExecWithCmd :: T.Text -> Maybe String -> [String] -> IO ()
 runExecWithCmd exe envFile extraArgs = do
-  let cmd = case envFile of
-        Just env -> mconcat ["source ", env," && cabal run ", T.unpack exe, " -- ", unwords extraArgs]
-        Nothing -> "cabal run " ++ T.unpack exe ++ " -- " ++ unwords extraArgs
-  let p = proc "bash" ["-c", cmd]
+  let buildCmd env = mconcat $ 
+        maybe [] (\e -> ["source ", e, " && "]) env ++
+        ["cabal run ", T.unpack exe, " -- ", unwords extraArgs]
+      cmd = buildCmd envFile
+      p = proc "bash" ["-c", cmd]
+      processConfig = setCreateGroup True p
   print p
-  runProcess_ p
+  runProcess_ processConfig
+
+data CmdOptions = CmdOptions
+  { optEnvFile :: Maybe String
+  , optList :: Bool
+  , optRun :: Bool
+  , optLint :: Bool
+  , optExecWithCmd :: Bool
+  , optExecutable :: Maybe String
+  , optExtraArgs :: [String]
+  } deriving (Show)
+
+optionsParser :: Parser CmdOptions
+optionsParser = CmdOptions
+  <$> optional (strOption (long "env" <> metavar "FILE" <> help "Environment file to source"))
+  <*> switch (long "list" <> help "List all executables")
+  <*> switch (long "run" <> help "Run with ghcid")
+  <*> switch (long "lint" <> help "Run with ghcid in lint mode")
+  <*> switch (long "exec-with-cmd" <> help "Execute with cabal run")
+  <*> optional (argument str (metavar "EXECUTABLE"))
+  <*> many (argument str (metavar "ARGS..."))
+
+opts :: ParserInfo CmdOptions
+opts = info (optionsParser <**> helper)
+  ( fullDesc
+  <> progDesc "Haskell development tool"
+  <> header "hdev - Usage: script [--env <file>] [--list | --run [<executable>] | --lint [<executable>] | --exec-with-cmd [<executable>] [args...]]" )
 
 main :: IO ()
 main = do
-  args <- getArgs
+  options <- execParser opts
   decodeResult <- parsePackageYaml
   let exes = getExecutables decodeResult
       selectAndRun lint env = interactiveSelect exes >>= \exe -> runGhcid exe lint env decodeResult
       selectAndExec env extraArgs = interactiveSelect exes >>= \exe -> runExecWithCmd exe env extraArgs
+      env = optEnvFile options
+      exe = fmap T.pack (optExecutable options)
       
-  case args of
-    ["--list"]                        -> mapM_ TIO.putStrLn exes
-    ["--run"]                         -> selectAndRun False Nothing
-    ["--run", exe]                    -> runGhcid (T.pack exe) False Nothing decodeResult
-    ["--lint"]                        -> selectAndRun True Nothing
-    ["--lint", exe]                   -> runGhcid (T.pack exe) True Nothing decodeResult
-    ["--env", envFile, "--run"]       -> selectAndRun False (Just envFile)
-    ["--env", envFile, "--run", exe]  -> runGhcid (T.pack exe) False (Just envFile) decodeResult
-    ["--env", envFile, "--lint"]      -> selectAndRun True (Just envFile)
-    ["--env", envFile, "--lint", exe] -> runGhcid (T.pack exe) True (Just envFile) decodeResult
-    ("--exec-with-cmd":exe:rest)      -> runExecWithCmd (T.pack exe) Nothing rest
-    ("--exec-with-cmd":rest)          -> selectAndExec Nothing rest
-    ("--env":envFile:"--exec-with-cmd":exe:rest) -> runExecWithCmd (T.pack exe) (Just envFile) rest
-    ("--env":envFile:"--exec-with-cmd":rest)      -> selectAndExec (Just envFile) rest
-    []                                -> selectAndRun False Nothing
-    _                                 -> putStrLn "Usage: script [--env <file>] [--list | --run [<executable>] | --lint [<executable>] | --exec-with-cmd [<executable>] [args...]]" >> exitFailure
+  case () of
+    _ | optList options -> mapM_ TIO.putStrLn exes
+      | optRun options -> maybe (selectAndRun False env) (\e -> runGhcid e False env decodeResult) exe
+      | optLint options -> maybe (selectAndRun True env) (\e -> runGhcid e True env decodeResult) exe
+      | optExecWithCmd options -> maybe (selectAndExec env (optExtraArgs options)) (\e -> runExecWithCmd e env (optExtraArgs options)) exe
+      | otherwise -> selectAndRun False env  -- Default behavior

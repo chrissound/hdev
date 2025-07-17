@@ -1,4 +1,4 @@
-name: HaskellNixCabalStarter
+name: hdev
 version: '0.1.0.0'
 author: HaskellNixCabalStarter
 maintainer: HaskellNixCabalStarter
@@ -15,6 +15,7 @@ dependencies:
 - unordered-containers
 - containers
 - hpack 
+- optparse-applicative
 executables:
   hdev:
     source-dirs: src
