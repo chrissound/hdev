@@ -1,8 +1,3 @@
-#!/usr/bin/env cabal
-{- cabal:
-build-depends: base, hpack, typed-process, directory, filepath, text
--}
-
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 
