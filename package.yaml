@@ -20,5 +20,17 @@ executables:
   hdev:
     source-dirs: src
     main: Main.hs
+  example:
+    source-dirs: src
+    main: ExampleMain.hs
+    ghc-options:  -main-is ExampleMain
+tests:
+  hdev-test:
+    main: Spec.hs
+    source-dirs: 
+    - test
+    - src
+    dependencies:
+    - hspec
 default-extensions: 
 - LambdaCase
