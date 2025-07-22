@@ -16,6 +16,7 @@ import qualified Data.Map as M
 import Data.List (isSuffixOf)
 import Data.Maybe (fromMaybe)
 import Options.Applicative
+import System.Environment (getArgs)
 
 parsePackageYaml :: IO DecodeResult
 parsePackageYaml = readPackageConfig defaultDecodeOptions >>= \case
@@ -112,7 +113,16 @@ opts = info (optionsParser <**> helper)
 
 main :: IO ()
 main = do
-  options <- execParser opts
+  args <- getArgs
+  options <- case break (== "--exec-with-cmd") args of
+    (before, _:after) -> do
+      let (executable, extraArgs) = case after of
+                                       (exe:rest) -> (Just exe, rest)
+                                       [] -> (Nothing, [])
+          parseArgs = before ++ ["--exec-with-cmd"] ++ maybe [] (:[]) executable
+      result <- handleParseResult $ execParserPure defaultPrefs opts parseArgs
+      return result { optExtraArgs = extraArgs }
+    (_, []) -> execParser opts
   decodeResult <- parsePackageYaml
   let exes = getExecutables decodeResult
       selectAndRun lint env = interactiveSelect exes >>= \exe -> runGhcid exe lint env decodeResult
